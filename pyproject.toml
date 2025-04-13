@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pystrand"
+version = "0.1.0"
+authors = [
+  { name="Diwakar", email="diwakarrankawat@gmail.com" }
+]
+description = "A lightweight, framework-agnostic real-time library."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.8"
+dependencies = []
