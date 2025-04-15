@@ -2,8 +2,21 @@ import socket
 import json
 import threading
 import uuid
+import logging
 from collections import defaultdict, abc
 from .base import PyStrandBase
+
+# Configure logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.WARNING)
+
+# Create a formatter that includes timestamp and module name
+formatter = logging.Formatter('%(asctime)s - [PyStrandClient] - %(levelname)s - %(message)s')
+
+# Create a console handler and set the formatter
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
 
 class PyStrandClient(PyStrandBase):
     """
@@ -25,11 +38,11 @@ class PyStrandClient(PyStrandBase):
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.connect((self.host, self.port))
             self.connected = True
-            print(f"[PyStrandClient] Connected to {self.host}:{self.port}")
+            logger.info(f"Connected to {self.host}:{self.port}")
             self.receive_thread = threading.Thread(target=self._receive_loop, daemon=True)
             self.receive_thread.start()
         except Exception as e:
-            print("[PyStrandClient] Connection error:", e)
+            logger.error("Connection error: %s", e)
 
     def disconnect(self):
         """Cleanly disconnect."""
@@ -40,7 +53,7 @@ class PyStrandClient(PyStrandBase):
             except:
                 pass
             self.sock = None
-            print("[PyStrandClient] Disconnected.")
+            logger.info("Disconnected.")
 
     def run_forever(self):
         """Simple loop to keep main thread alive if needed."""
@@ -51,11 +64,23 @@ class PyStrandClient(PyStrandBase):
         except KeyboardInterrupt:
             pass
         self.disconnect()
+    
+    def broadcast_message(self, message: str):
+        """Broadcast a message to all connected clients."""
+        self.__send_json("broadcast", {"message": message})
+    
+    def send_room_message(self, room_id: str, message: str):
+        """Send a message to a specific room."""
+        self.__send_json("message_to_room", {"room_id": room_id, "message": message})
+    
+    def send_private_message(self, client_id: str, message: str):
+        """Send a message to a specific client."""
+        self.__send_json("message_to_connection", {"conn_id": client_id, "message": message})
 
-    def send_json(self, action: str, params: dict, request_id: str=None):
+    def __send_json(self, action: str, params: dict, request_id: str=None):
         """Send a JSON message following your protocol format."""
         if not self.connected:
-            print("[PyStrandClient] Not connected, cannot send.")
+            logger.info("Not connected, cannot send.")
             return
 
         if not request_id:
@@ -71,7 +96,7 @@ class PyStrandClient(PyStrandBase):
             serialized = json.dumps(message) + "\n"
             self.sock.sendall(serialized.encode("utf-8"))
         except Exception as e:
-            print("[PyStrandClient] Send error:", e)
+            logger.error("Send error: %s", e)
             self.disconnect()
 
     def _receive_loop(self):
@@ -81,7 +106,7 @@ class PyStrandClient(PyStrandBase):
             try:
                 data = self.sock.recv(1024)
                 if not data:
-                    print("[PyStrandClient] Server closed connection.")
+                    logger.info("Server closed connection.")
                     self.connected = False
                     break
                 buffer += data.decode("utf-8")
@@ -91,7 +116,7 @@ class PyStrandClient(PyStrandBase):
                     if line:
                         self._handle_incoming(line)
             except Exception as e:
-                print("[PyStrandClient] Receive error:", e)
+                logger.error("Receive error: %s", e)
                 self.disconnect()
 
     def _handle_incoming(self, raw_line: str):
@@ -104,55 +129,64 @@ class PyStrandClient(PyStrandBase):
 
             # example protocol assumption
             if action == "connection_request": 
-                resp = self.on_connect(params, params.get("conn_id"))
-                if isinstance(resp, bool):
-                    self.send_json("response",
-                                   {
-                                       "accepted": resp,
-                                       "roomID": params.get("url", 'room'),
-                                       "clientID": str(uuid.uuid4()),
+                try:
+                    resp = self.on_connect(params)
+                    if isinstance(resp, bool):
+                        self.__send_json("response",
+                                    {
+                                        "accepted": resp,
+                                        "roomID": params.get("url", 'room'),
+                                        "clientID": str(uuid.uuid4()),
+                                        },
+                                    request_id
+                                    )
+                    elif isinstance(resp, dict):
+                        if 'roomID' not in resp:
+                            resp['roomID'] = params.get("url", 'room')
+                        if 'clientID' not in resp:
+                            resp['clientID'] = str(uuid.uuid4())
+                        self.__send_json("response",
+                                    {
+                                        "request_id": request_id,
+                                        "accepted": True,
+                                        **resp,
                                     },
-                                   request_id
-                                   )
-                elif isinstance(resp, dict):
-                    if 'roomID' not in resp:
-                        resp['roomID'] = params.get("url", 'room')
-                    if 'clientID' not in resp:
-                        resp['clientID'] = str(uuid.uuid4())
-                    self.send_json("response",
-                                   {
-                                       "request_id": request_id,
-                                       "accepted": True,
-                                       **resp,
-                                   },
-                                   request_id)
-                elif isinstance(resp, str):
-                    self.send_json("response",
-                                   {
-                                       "request_id": request_id,
-                                       "accepted": True,
-                                       "roomID": resp,
-                                       "clientID": str(uuid.uuid4()),
-                                   },
-                                   request_id)
-                else:
-                    self.send_json("response",
-                                   {
-                                       "accepted": False,
-                                   },
-                                   request_id)
+                                    request_id)
+                    elif isinstance(resp, str):
+                        self.__send_json("response",
+                                    {
+                                        "request_id": request_id,
+                                        "accepted": True,
+                                        "roomID": resp,
+                                        "clientID": str(uuid.uuid4()),
+                                    },
+                                    request_id)
+                    else:
+                        logger.warning("Invalid response from server: %s", resp)
+                        self.__send_json("response",
+                                    {
+                                        "accepted": False,
+                                    },
+                                    request_id)
+                except Exception as e:
+                    logger.error("Error processing message: %s", e)
+                    self.__send_json("response",
+                                    {
+                                        "accepted": False,
+                                    },
+                                    request_id)
             elif action == "new_message":
-                self.on_message(params.get("message"), params.get("metadata"), params.get("conn_id"))
+                self.on_message(params.get("message"), params.get("metaData"))
             elif action == "disconnected":
-                self.on_disconnect(params, params.get("conn_id"))
+                self.on_disconnect(params)
             else:
                 # you can handle other actions or fallback
                 pass
 
         except json.JSONDecodeError:
-            print("[PyStrandClient] Invalid JSON:", raw_line)
+            logger.error("Invalid JSON: %s", raw_line)
         except Exception as e:
-            print("[PyStrandClient] Error processing message:", e)
+            logger.error("Error processing message: %s", e)
 
 
 class PyStrand(PyStrandClient):
@@ -174,17 +208,17 @@ class PyStrand(PyStrandClient):
         return wrapper
 
     # override base methods to dispatch to event handlers
-    def on_connect(self, metadata, conn):
-        super().on_connect(metadata, conn)  # if user subclassed
+    def on_connect(self, metadata):
+        super().on_connect(metadata)  # if user subclassed
         for func in self.event_handlers["connect"]:
-            func(metadata, conn)
+            func(metadata)
 
-    def on_disconnect(self, metadata, conn):
-        super().on_disconnect(metadata, conn)
+    def on_disconnect(self, metadata):
+        super().on_disconnect(metadata)
         for func in self.event_handlers["disconnect"]:
-            func(metadata, conn)
+            func(metadata)
 
-    def on_message(self, message, metadata, conn):
-        super().on_message(message, metadata, conn)
+    def on_message(self, message, metadata):
+        super().on_message(message, metadata)
         for func in self.event_handlers["message"]:
-            func(message, metadata, conn)
+            func(message, metadata)
