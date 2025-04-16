@@ -7,9 +7,11 @@ class MyStrand(PyStrandClient):
         super().__init__(host, port)
         self._id = _id
 
+    def on_connection_request(self, metadata):
+        return True
+    
     def on_connect(self, metadata):
-        print(f"on_connect override {self._id} {metadata}")
-        return metadata['headers'].get('Authorization', [''])[0] == 'Bearer 1234567890'
+        return self.send_private_message(metadata['clientID'], "Hello from server")
 
     def on_message(self, message, metadata):
         print(f"on_message override {self._id} {base64.b64decode(message).decode('utf-8')} {metadata}")

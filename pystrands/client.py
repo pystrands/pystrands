@@ -3,25 +3,45 @@ import json
 import threading
 import uuid
 import logging
-from collections import defaultdict, abc
-from .base import PyStrandBase
-
+from pystrands.context import ConnectionRequestContext, Context
 # Configure logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARNING)
 
 # Create a formatter that includes timestamp and module name
-formatter = logging.Formatter('%(asctime)s - [PyStrandClient] - %(levelname)s - %(message)s')
+formatter = logging.Formatter('%(asctime)s - [PyStrandsClient] - %(levelname)s - %(message)s')
 
 # Create a console handler and set the formatter
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
-class PyStrandClient(PyStrandBase):
+class PyStrandsClient:
     """
-    Advanced usage: let users subclass this,
-    override on_connect/on_message/on_disconnect, and call .run_forever().
+    PyStrandsClient is a client for the PyStrands server.
+    Override functions
+    - on_connection_request
+        parameters:
+            metadata: dict
+        returns:
+            bool: True if the connection is accepted, False otherwise
+    ---
+    Example:
+    ```python
+    class MyClient(PyStrandsClient):
+        def on_connection_request(self, metadata):
+            logger.info(f"Connection request from {metadata}")
+            return True
+        
+        def on_message(self, message, metadata):
+            logger.info(f"Received message: {message} from {metadata}")
+
+        def on_disconnect(self, metadata):
+            logger.info(f"Disconnected from {metadata}")
+
+        def on_error(self, error):
+            logger.error(f"Error: {error}")
+    ```
     """
 
     def __init__(self, host="localhost", port=8081):
@@ -66,7 +86,7 @@ class PyStrandClient(PyStrandBase):
         self.disconnect()
     
     def broadcast_message(self, message: str):
-        """Broadcast a message to all connected clients."""
+        """Broadcast a message to all connections."""
         self.__send_json("broadcast", {"message": message})
     
     def send_room_message(self, room_id: str, message: str):
@@ -74,7 +94,7 @@ class PyStrandClient(PyStrandBase):
         self.__send_json("message_to_room", {"room_id": room_id, "message": message})
     
     def send_private_message(self, client_id: str, message: str):
-        """Send a message to a specific client."""
+        """Send a message to a specific connection using the `client_id`."""
         self.__send_json("message_to_connection", {"conn_id": client_id, "message": message})
 
     def __send_json(self, action: str, params: dict, request_id: str=None):
@@ -126,48 +146,27 @@ class PyStrandClient(PyStrandBase):
             action = msg.get("action")
             params = msg.get("params", {})
             request_id = msg.get("request_id")
-
             # example protocol assumption
             if action == "connection_request": 
                 try:
-                    resp = self.on_connect(params)
-                    if isinstance(resp, bool):
-                        self.__send_json("response",
-                                    {
-                                        "accepted": resp,
-                                        "roomID": params.get("url", 'room'),
-                                        "clientID": str(uuid.uuid4()),
-                                        },
-                                    request_id
-                                    )
-                    elif isinstance(resp, dict):
-                        if 'roomID' not in resp:
-                            resp['roomID'] = params.get("url", 'room')
-                        if 'clientID' not in resp:
-                            resp['clientID'] = str(uuid.uuid4())
-                        self.__send_json("response",
-                                    {
-                                        "request_id": request_id,
-                                        "accepted": True,
-                                        **resp,
-                                    },
-                                    request_id)
-                    elif isinstance(resp, str):
-                        self.__send_json("response",
-                                    {
-                                        "request_id": request_id,
-                                        "accepted": True,
-                                        "roomID": resp,
-                                        "clientID": str(uuid.uuid4()),
-                                    },
-                                    request_id)
-                    else:
-                        logger.warning("Invalid response from server: %s", resp)
-                        self.__send_json("response",
-                                    {
-                                        "accepted": False,
-                                    },
-                                    request_id)
+                    meta_data = {
+                        "client_id": str(uuid.uuid4()),
+                        "room_id": params.get("url", 'room'),
+                        "metadata": {},
+                    }
+                    context = Context.from_json(meta_data)
+                    connection_request_context = ConnectionRequestContext.from_json({
+                        "headers": params.get("headers", {}),
+                        "url": params.get("url", 'room'),
+                        "remote_addr": params.get("remote_addr"),
+                        "context": context,
+                        "accepted": True,
+                    })
+                    resp = self.on_connection_request(connection_request_context)
+                    self.__send_json("response", {
+                        "accepted": resp,
+                        **connection_request_context.context.to_json(),
+                    }, request_id)
                 except Exception as e:
                     logger.error("Error processing message: %s", e)
                     self.__send_json("response",
@@ -175,10 +174,14 @@ class PyStrandClient(PyStrandBase):
                                         "accepted": False,
                                     },
                                     request_id)
+            elif action == "new_connection":
+                self.on_new_connection(Context.from_json(params))
             elif action == "new_message":
-                self.on_message(params.get("message"), params.get("metaData"))
+                self.on_message(params.get("message"), Context.from_json(params.get("metaData")))
             elif action == "disconnected":
-                self.on_disconnect(params)
+                self.on_disconnect(Context.from_json(params))
+            elif action == "error":
+                self.on_error(params.get("error"), Context.from_json(params.get("metaData")))
             else:
                 # you can handle other actions or fallback
                 pass
@@ -188,37 +191,23 @@ class PyStrandClient(PyStrandBase):
         except Exception as e:
             logger.error("Error processing message: %s", e)
 
+    def on_connect(self, context: Context):
+        """Override this method to handle the connection request."""
+        logger.info(f"Connected to {context.to_json()}")
 
-class PyStrand(PyStrandClient):
-    """
-    Simpler usage: also supports decorators like @client.on("connect"),
-    internally calls base methods so you can do both if you want.
-    """
-
-    def __init__(self, host="localhost", port=8081):
-        super().__init__(host, port)
-        # event_handlers dict, each key -> list of callback functions
-        self.event_handlers = defaultdict(list)
-
-    def on(self, event_name):
-        """Decorator usage: @client.on('connect') or 'disconnect' or 'message' etc."""
-        def wrapper(func):
-            self.event_handlers[event_name].append(func)
-            return func
-        return wrapper
-
-    # override base methods to dispatch to event handlers
-    def on_connect(self, metadata):
-        super().on_connect(metadata)  # if user subclassed
-        for func in self.event_handlers["connect"]:
-            func(metadata)
-
-    def on_disconnect(self, metadata):
-        super().on_disconnect(metadata)
-        for func in self.event_handlers["disconnect"]:
-            func(metadata)
-
-    def on_message(self, message, metadata):
-        super().on_message(message, metadata)
-        for func in self.event_handlers["message"]:
-            func(message, metadata)
+    def on_connection_request(self, context: ConnectionRequestContext):
+        """Override this method to handle the connection request."""
+        logger.info(f"Connection request from {context.context.client_id} in room {context.context.room_id}")
+        return True
+    
+    def on_error(self, error):
+        """Override this method to handle the error event."""
+        logger.error(f"Error: {error}")
+    
+    def on_disconnect(self, context: Context):
+        """Override this method to handle the disconnect event."""
+        pass
+    
+    def on_message(self, message, context: Context):
+        """Override this method to handle the message event."""
+        logger.info(f"Received message: {message} from {context.client_id} in room {context.room_id}")
