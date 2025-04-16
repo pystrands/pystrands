@@ -16,6 +16,7 @@ PyStrands is a simple and efficient real-time communication library that enables
 - Metadata support for clients
 - Framework-agnostic design
 - Simple and intuitive API
+- Easy-to-use CLI for server management
 
 ## Installation
 
@@ -24,6 +25,21 @@ pip install pystrands
 ```
 
 ## Quick Start
+
+### Running the Server
+
+To start the PyStrands server, use the CLI command:
+
+```bash
+python -m pystrands server [options]
+```
+
+The server binary will be automatically downloaded for your platform and architecture. All arguments after `server` will be passed to the server binary.
+
+Example:
+```bash
+python -m pystrands server --ws-port 8080 --tcp-port 8081
+```
 
 ### Basic Client Implementation
 
