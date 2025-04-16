@@ -116,7 +116,3 @@ This project is licensed under the MIT License - see the [LICENSE](licence) file
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Author
-
-- Diwakar (diwakarrankawat@gmail.com) 
