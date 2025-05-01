@@ -1,29 +1,26 @@
 # user_app2.py
 from pystrands import PyStrandsClient
-import base64
+from pystrands.context import ConnectionRequestContext, Context
 
 class MyStrand(PyStrandsClient):
-    def __init__(self, host="localhost", port=8081, _id=None):
-        super().__init__(host, port)
-        self._id = _id
+    def on_connection_request(self, context: ConnectionRequestContext):
+        context.context.room_id = 'room-one'
+        context.context.client_id = 'user-one'
+        context.context.metadata = {
+            'name': 'User',
+        }
 
-    def on_connection_request(self, request):
-        return True
+    def on_new_connection(self, context):
+        print(f"on_new_connection override {context.client_id} {context.room_id}")
+        self.send_room_message(context.room_id, f"Hello {context.metadata.get('name')} from server")
     
-    def on_connect(self, context):
-        return self.send_private_message(context.client_id, "Hello from server")
+    def on_message(self, message: str, context: Context):
+        print(f"on_message override {context.client_id} {message}")
+        self.send_room_message(context.room_id, f"Message received {context.metadata.get('name')}")
+    
+    def on_disconnect(self, context: Context):
+        print(f"on_disconnect override {context.client_id} {context.room_id}")
 
-    def on_message(self, message, context):
-        print(f"on_message override {self._id} {base64.b64decode(message).decode('utf-8')} {context}")
-        self.send_room_message("room1", f"Hello from {self._id}")
-
-    def on_disconnect(self, context):
-        print(f"on_disconnect override {self._id} {context}")
-
-client = MyStrand("localhost", 8081, "AAA")
+client = MyStrand("205.209.121.166", 8081)
 client.connect()
-client2 = MyStrand("localhost", 8081, "BBB")
-client2.connect()
-client3 = MyStrand("localhost", 8081, "CCC")
-client3.connect()
 client.run_forever()

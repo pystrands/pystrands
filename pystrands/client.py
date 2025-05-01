@@ -19,29 +19,6 @@ logger.addHandler(console_handler)
 class PyStrandsClient:
     """
     PyStrandsClient is a client for the PyStrands server.
-    Override functions
-    - on_connection_request
-        parameters:
-            metadata: dict
-        returns:
-            bool: True if the connection is accepted, False otherwise
-    ---
-    Example:
-    ```python
-    class MyClient(PyStrandsClient):
-        def on_connection_request(self, metadata):
-            logger.info(f"Connection request from {metadata}")
-            return True
-        
-        def on_message(self, message, metadata):
-            logger.info(f"Received message: {message} from {metadata}")
-
-        def on_disconnect(self, metadata):
-            logger.info(f"Disconnected from {metadata}")
-
-        def on_error(self, error):
-            logger.error(f"Error: {error}")
-    ```
     """
 
     def __init__(self, host="localhost", port=8081):
@@ -146,6 +123,7 @@ class PyStrandsClient:
             action = msg.get("action")
             params = msg.get("params", {})
             request_id = msg.get("request_id")
+            logger.info(f"Received message: {raw_line}")
             # example protocol assumption
             if action == "connection_request": 
                 try:
@@ -175,13 +153,13 @@ class PyStrandsClient:
                                     },
                                     request_id)
             elif action == "new_connection":
-                self.on_new_connection(Context.from_json(params))
+                self.on_new_connection(Context.from_json(params.get("context")))
             elif action == "new_message":
-                self.on_message(params.get("message"), Context.from_json(params.get("metaData")))
+                self.on_message(params.get("message"), Context.from_json(params.get("context")))
             elif action == "disconnected":
-                self.on_disconnect(Context.from_json(params))
+                self.on_disconnect(Context.from_json(params.get("context")))
             elif action == "error":
-                self.on_error(params.get("error"), Context.from_json(params.get("metaData")))
+                self.on_error(params.get("error"), Context.from_json(params.get("context")))
             else:
                 # you can handle other actions or fallback
                 pass
@@ -191,23 +169,22 @@ class PyStrandsClient:
         except Exception as e:
             logger.error("Error processing message: %s", e)
 
-    def on_connect(self, context: Context):
-        """Override this method to handle the connection request."""
+    def on_new_connection(self, context: Context):
+        """Override this method to handle the new connection."""
         logger.info(f"Connected to {context.to_json()}")
 
     def on_connection_request(self, context: ConnectionRequestContext):
         """Override this method to handle the connection request."""
         logger.info(f"Connection request from {context.context.client_id} in room {context.context.room_id}")
-        return True
     
-    def on_error(self, error):
+    def on_error(self, error, context: Context):
         """Override this method to handle the error event."""
         logger.error(f"Error: {error}")
     
     def on_disconnect(self, context: Context):
         """Override this method to handle the disconnect event."""
-        pass
+        logger.info(f"Disconnected from {context.client_id} in room {context.room_id}")
     
-    def on_message(self, message, context: Context):
+    def on_message(self, message: str, context: Context):
         """Override this method to handle the message event."""
         logger.info(f"Received message: {message} from {context.client_id} in room {context.room_id}")

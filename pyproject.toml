@@ -4,12 +4,30 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pystrands"
-version = "0.1.0"
-authors = [
-  { name="Diwakar", email="diwakarrankawat@gmail.com" }
-]
-description = "A lightweight, framework-agnostic real-time library."
+version = "0.1.2"
+description = "A lightweight, framework-agnostic real-time library for Python applications."
 readme = "README.md"
-license = "MIT"
+authors = [
+    {name = "Diwakar", email = "diwakarrankawat@gmail.com"}
+]
+license = {text = "MIT"}
 requires-python = ">=3.8"
-dependencies = []
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Internet :: WWW/HTTP",
+    "Operating System :: OS Independent"
+]
+keywords = ["websocket", "realtime", "tcp", "server", "client", "messaging"]
+
+[project.urls]
+Homepage = "https://github.com/pystrands/pystrands"
+Documentation = "https://github.com/pystrands/pystrands#readme"
+"Bug Tracker" = "https://github.com/pystrands/pystrands/issues"
