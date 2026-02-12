@@ -1,3 +1,6 @@
+from typing import Dict, List
+
+
 class JSONModel:
     def __init__(self, **kwargs):
         for k in self.__annotations__:
@@ -9,6 +12,7 @@ class JSONModel:
 
     def to_json(self):
         return {k: getattr(self, k) for k in self.__annotations__}
+
 
 class Context(JSONModel):
     client_id: str
@@ -24,8 +28,9 @@ class Context(JSONModel):
     Metadata is a dictionary of key-value pairs that are used to store additional information about the context.
     """
 
+
 class ConnectionRequestContext(JSONModel):
-    headers: dict[str, list[str]]
+    headers: Dict[str, List[str]]
     """
     The headers of the connection request.
     """
@@ -37,7 +42,7 @@ class ConnectionRequestContext(JSONModel):
     """
     The remote address of the connection request.
     """
-    context: Context
+    context: "Context"
     """
     The context of the connection request.
     """

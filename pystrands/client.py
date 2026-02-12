@@ -3,7 +3,9 @@ import json
 import threading
 import uuid
 import logging
+import time
 from pystrands.context import ConnectionRequestContext, Context
+
 # Configure logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARNING)
@@ -16,65 +18,100 @@ console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
+
 class PyStrandsClient:
     """
     PyStrandsClient is a client for the PyStrands server.
     """
 
-    def __init__(self, host="localhost", port=8081):
+    def __init__(self, host="localhost", port=8081, auto_reconnect=True,
+                 reconnect_delay=1.0, max_reconnect_delay=30.0,
+                 reconnect_backoff=2.0):
         super().__init__()
         self.host = host
         self.port = port
         self.sock = None
         self.connected = False
         self.receive_thread = None
+        self._stop_event = threading.Event()
+
+        # Reconnection settings
+        self.auto_reconnect = auto_reconnect
+        self.reconnect_delay = reconnect_delay
+        self.max_reconnect_delay = max_reconnect_delay
+        self.reconnect_backoff = reconnect_backoff
+        self._intentional_disconnect = False
 
     def connect(self):
         """Connect to the TCP server."""
         try:
+            self._intentional_disconnect = False
+            self._stop_event.clear()
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.connect((self.host, self.port))
             self.connected = True
-            logger.info(f"Connected to {self.host}:{self.port}")
+            logger.info("Connected to %s:%s", self.host, self.port)
             self.receive_thread = threading.Thread(target=self._receive_loop, daemon=True)
             self.receive_thread.start()
+            return True
         except Exception as e:
             logger.error("Connection error: %s", e)
+            self.connected = False
+            return False
 
     def disconnect(self):
         """Cleanly disconnect."""
+        self._intentional_disconnect = True
         self.connected = False
+        self._stop_event.set()
         if self.sock:
             try:
                 self.sock.close()
-            except:
+            except Exception:
                 pass
             self.sock = None
             logger.info("Disconnected.")
 
+    def _reconnect(self):
+        """Attempt to reconnect with exponential backoff."""
+        if not self.auto_reconnect or self._intentional_disconnect:
+            return
+
+        delay = self.reconnect_delay
+        while not self._stop_event.is_set() and not self._intentional_disconnect:
+            logger.info("Attempting reconnection in %.1f seconds...", delay)
+            self._stop_event.wait(delay)
+            if self._stop_event.is_set() or self._intentional_disconnect:
+                break
+            if self.connect():
+                logger.info("Reconnected successfully.")
+                return
+            delay = min(delay * self.reconnect_backoff, self.max_reconnect_delay)
+
     def run_forever(self):
-        """Simple loop to keep main thread alive if needed."""
+        """Block the main thread until disconnect. Uses threading.Event for CPU-efficiency."""
         self.connect()
         try:
-            while self.connected:
-                pass
+            # Block efficiently instead of busy-waiting
+            while not self._stop_event.is_set():
+                self._stop_event.wait(timeout=1.0)
         except KeyboardInterrupt:
             pass
         self.disconnect()
-    
-    def broadcast_message(self, message: str):
-        """Broadcast a message to all connections."""
-        self.__send_json("broadcast", {"message": message})
-    
-    def send_room_message(self, room_id: str, message: str):
-        """Send a message to a specific room."""
-        self.__send_json("message_to_room", {"room_id": room_id, "message": message})
-    
-    def send_private_message(self, client_id: str, message: str):
-        """Send a message to a specific connection using the `client_id`."""
-        self.__send_json("message_to_connection", {"conn_id": client_id, "message": message})
 
-    def __send_json(self, action: str, params: dict, request_id: str=None):
+    def broadcast_message(self, message):
+        """Broadcast a message to all connections."""
+        self._send_json("broadcast", {"message": message})
+
+    def send_room_message(self, room_id, message):
+        """Send a message to a specific room."""
+        self._send_json("message_to_room", {"room_id": room_id, "message": message})
+
+    def send_private_message(self, client_id, message):
+        """Send a message to a specific connection using the `client_id`."""
+        self._send_json("message_to_connection", {"conn_id": client_id, "message": message})
+
+    def _send_json(self, action, params, request_id=None):
         """Send a JSON message following your protocol format."""
         if not self.connected:
             logger.info("Not connected, cannot send.")
@@ -94,17 +131,31 @@ class PyStrandsClient:
             self.sock.sendall(serialized.encode("utf-8"))
         except Exception as e:
             logger.error("Send error: %s", e)
-            self.disconnect()
+            self._handle_connection_lost()
+
+    def _handle_connection_lost(self):
+        """Handle a lost connection — close socket and optionally reconnect."""
+        was_connected = self.connected
+        self.connected = False
+        if self.sock:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+            self.sock = None
+
+        if was_connected and self.auto_reconnect and not self._intentional_disconnect:
+            threading.Thread(target=self._reconnect, daemon=True).start()
 
     def _receive_loop(self):
         """Internal thread: read data, parse lines, dispatch to handlers."""
         buffer = ""
         while self.connected:
             try:
-                data = self.sock.recv(1024)
+                data = self.sock.recv(65536)
                 if not data:
                     logger.info("Server closed connection.")
-                    self.connected = False
+                    self._handle_connection_lost()
                     break
                 buffer += data.decode("utf-8")
                 while "\n" in buffer:
@@ -113,44 +164,51 @@ class PyStrandsClient:
                     if line:
                         self._handle_incoming(line)
             except Exception as e:
-                logger.error("Receive error: %s", e)
-                self.disconnect()
+                if self.connected:
+                    logger.error("Receive error: %s", e)
+                    self._handle_connection_lost()
+                break
 
-    def _handle_incoming(self, raw_line: str):
+    def _handle_incoming(self, raw_line):
         """Parse JSON, figure out action, call appropriate method."""
         try:
             msg = json.loads(raw_line)
             action = msg.get("action")
             params = msg.get("params", {})
             request_id = msg.get("request_id")
-            logger.info(f"Received message: {raw_line}")
-            # example protocol assumption
-            if action == "connection_request": 
+            logger.info("Received message: %s", raw_line)
+
+            if action == "connection_request":
                 try:
                     meta_data = {
                         "client_id": str(uuid.uuid4()),
-                        "room_id": params.get("url", 'room'),
+                        "room_id": params.get("url", "room"),
                         "metadata": {},
                     }
-                    context = Context.from_json(meta_data)
+                    ctx = Context.from_json(meta_data)
                     connection_request_context = ConnectionRequestContext.from_json({
                         "headers": params.get("headers", {}),
-                        "url": params.get("url", 'room'),
+                        "url": params.get("url", "room"),
                         "remote_addr": params.get("remote_addr"),
-                        "context": context,
+                        "context": ctx,
                         "accepted": True,
                     })
-                    resp = self.on_connection_request(connection_request_context)
-                    self.__send_json("response", {
-                        "accepted": resp,
+                    result = self.on_connection_request(connection_request_context)
+                    # Normalize return value: if user returns True/False use it,
+                    # otherwise use connection_request_context.accepted
+                    if isinstance(result, bool):
+                        accepted = result
+                    else:
+                        accepted = connection_request_context.accepted
+
+                    self._send_json("response", {
+                        "accepted": accepted,
                         **connection_request_context.context.to_json(),
                     }, request_id)
                 except Exception as e:
-                    logger.error("Error processing message: %s", e)
-                    self.__send_json("response",
-                                    {
-                                        "accepted": False,
-                                    },
+                    logger.error("Error processing connection request: %s", e)
+                    self._send_json("response",
+                                    {"accepted": False},
                                     request_id)
             elif action == "new_connection":
                 self.on_new_connection(Context.from_json(params.get("context")))
@@ -160,8 +218,11 @@ class PyStrandsClient:
                 self.on_disconnect(Context.from_json(params.get("context")))
             elif action == "error":
                 self.on_error(params.get("error"), Context.from_json(params.get("context")))
+            elif action == "heartbeat":
+                # Respond to server heartbeat — just ignore / no-op
+                pass
             else:
-                # you can handle other actions or fallback
+                # Unknown action — ignore
                 pass
 
         except json.JSONDecodeError:
@@ -169,22 +230,33 @@ class PyStrandsClient:
         except Exception as e:
             logger.error("Error processing message: %s", e)
 
-    def on_new_connection(self, context: Context):
-        """Override this method to handle the new connection."""
-        logger.info(f"Connected to {context.to_json()}")
+    def on_new_connection(self, context):
+        """Override this method to handle the new connection event.
+        Called when a WebSocket client successfully connects to the Go server."""
+        logger.info("New connection: %s", context.to_json())
 
-    def on_connection_request(self, context: ConnectionRequestContext):
-        """Override this method to handle the connection request."""
-        logger.info(f"Connection request from {context.context.client_id} in room {context.context.room_id}")
-    
-    def on_error(self, error, context: Context):
+    def on_connection_request(self, context):
+        """Override this method to handle the connection request.
+
+        Args:
+            context: ConnectionRequestContext with headers, url, remote_addr, context, accepted.
+
+        Returns:
+            bool: True to accept, False to reject. Or modify context.accepted directly.
+                  If no explicit bool is returned, context.accepted is used (defaults to True).
+        """
+        logger.info("Connection request from %s in room %s",
+                     context.context.client_id, context.context.room_id)
+        return True
+
+    def on_error(self, error, context):
         """Override this method to handle the error event."""
-        logger.error(f"Error: {error}")
-    
-    def on_disconnect(self, context: Context):
+        logger.error("Error: %s", error)
+
+    def on_disconnect(self, context):
         """Override this method to handle the disconnect event."""
-        logger.info(f"Disconnected from {context.client_id} in room {context.room_id}")
-    
-    def on_message(self, message: str, context: Context):
+        logger.info("Disconnected: %s in room %s", context.client_id, context.room_id)
+
+    def on_message(self, message, context):
         """Override this method to handle the message event."""
-        logger.info(f"Received message: {message} from {context.client_id} in room {context.room_id}")
+        logger.info("Message: %s from %s in room %s", message, context.client_id, context.room_id)
