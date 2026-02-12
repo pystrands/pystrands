@@ -13,7 +13,7 @@ def get_binary_url():
     machine = platform.machine().lower()
     
     # Map platform and architecture to binary URLs
-    base_url = "https://github.com/pystrands/pystrands-go/releases/download/v0.1.0"
+    base_url = "https://github.com/pystrands/pystrands-go/releases/download/v0.2.0"
     
     if system == "linux":
         if machine in ["x86_64", "amd64"]:
