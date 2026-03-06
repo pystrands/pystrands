@@ -583,6 +583,91 @@ class TestEchoPattern:
 # Multiple WS clients connecting at the same time.
 # ====================
 
+class TestFullServerRestart:
+    @pytest.mark.asyncio
+    async def test_server_crash_and_restart(self):
+        """Server completely dies and restarts on the same port.
+        Client should reconnect and resume receiving messages."""
+        received = []
+        PORT = 19877
+
+        class MyClient(AsyncPyStrandsClient):
+            async def on_message(self, message, context):
+                received.append(message)
+
+        # Start server v1
+        sock1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock1.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock1.bind(("127.0.0.1", PORT))
+        sock1.listen(5)
+        clients1 = []
+        running = [True]
+
+        def accept_loop(s, cl):
+            while running[0]:
+                try:
+                    s.settimeout(0.5)
+                    conn, _ = s.accept()
+                    cl.append(conn)
+                except socket.timeout:
+                    continue
+                except:
+                    break
+
+        t1 = threading.Thread(target=accept_loop, args=(sock1, clients1), daemon=True)
+        t1.start()
+
+        # Connect client
+        client = MyClient("127.0.0.1", PORT, auto_reconnect=True,
+                          reconnect_delay=0.3, max_reconnect_delay=1.0)
+        await client.connect()
+        await asyncio.sleep(0.2)
+        assert client.connected is True
+
+        # Send a message on server v1
+        ctx = {"client_id": "c1", "room_id": "r1", "metadata": {}}
+        msg1 = json.dumps({"request_id": "v1", "action": "new_message",
+                           "params": {"message": "from-server-v1", "context": ctx}}) + "\n"
+        clients1[0].sendall(msg1.encode())
+        await asyncio.sleep(0.2)
+        assert "from-server-v1" in received
+
+        # KILL THE ENTIRE SERVER
+        running[0] = False
+        for c in clients1:
+            c.close()
+        sock1.close()
+        await asyncio.sleep(0.5)
+        assert client.connected is False, "Client should detect server is gone"
+
+        # START SERVER v2 on same port
+        sock2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock2.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock2.bind(("127.0.0.1", PORT))
+        sock2.listen(5)
+        clients2 = []
+        running[0] = True
+        t2 = threading.Thread(target=accept_loop, args=(sock2, clients2), daemon=True)
+        t2.start()
+
+        # Wait for reconnect
+        await asyncio.sleep(2.0)
+        assert client.connected is True, "Client should reconnect to restarted server"
+        assert len(clients2) >= 1, "Server v2 should have the reconnected client"
+
+        # Send a message on server v2
+        msg2 = json.dumps({"request_id": "v2", "action": "new_message",
+                           "params": {"message": "from-server-v2", "context": ctx}}) + "\n"
+        clients2[0].sendall(msg2.encode())
+        await asyncio.sleep(0.3)
+        assert "from-server-v2" in received, "Client should receive messages after server restart"
+
+        # Cleanup
+        await client.disconnect()
+        running[0] = False
+        sock2.close()
+
+
 class TestConcurrentConnectionRequests:
     @pytest.mark.asyncio
     async def test_multiple_connection_requests(self, mock_server):
