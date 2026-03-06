@@ -42,7 +42,7 @@ class PyStrandsClient:
         self.reconnect_backoff = reconnect_backoff
         self._intentional_disconnect = False
 
-    def connect(self):
+    def connect(self) -> bool:
         """Connect to the TCP server."""
         try:
             self._intentional_disconnect = False

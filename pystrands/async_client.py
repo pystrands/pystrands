@@ -47,8 +47,6 @@ class AsyncPyStrandsClient:
         self.reconnect_backoff = reconnect_backoff
         self._intentional_disconnect = False
 
-
-
     async def connect(self) -> bool:
         """Connect to the TCP server."""
         try:
