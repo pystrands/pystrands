@@ -3,15 +3,23 @@ from typing import Dict, List
 
 class JSONModel:
     def __init__(self, **kwargs):
-        for k in self.__annotations__:
+        for k in self._get_annotations():
             setattr(self, k, kwargs.get(k))
+
+    @classmethod
+    def _get_annotations(cls):
+        """Get annotations from the class hierarchy (compatible with Python 3.14+)."""
+        annotations = {}
+        for klass in reversed(cls.__mro__):
+            annotations.update(getattr(klass, '__annotations__', {}))
+        return annotations
 
     @classmethod
     def from_json(cls, data):
         return cls(**data)
 
     def to_json(self):
-        return {k: getattr(self, k) for k in self.__annotations__}
+        return {k: getattr(self, k) for k in self._get_annotations()}
 
 
 class Context(JSONModel):
