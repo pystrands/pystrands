@@ -46,6 +46,7 @@ class AsyncPyStrandsClient:
         self.max_reconnect_delay = max_reconnect_delay
         self.reconnect_backoff = reconnect_backoff
         self._intentional_disconnect = False
+        self._draining = False  # True when shutting down, lets in-flight handlers finish
 
     async def connect(self) -> bool:
         """Connect to the TCP server."""
@@ -64,15 +65,28 @@ class AsyncPyStrandsClient:
             self.connected = False
             return False
 
-    async def disconnect(self):
-        """Cleanly disconnect."""
+    async def disconnect(self, timeout=5.0):
+        """Cleanly disconnect. Waits for in-flight handlers to finish.
+
+        Args:
+            timeout: Max seconds to wait for in-flight handlers before force-closing.
+        """
         self._intentional_disconnect = True
+        self._draining = True
         self.connected = False
         self._stop_event.set()
         if self._receive_task and not self._receive_task.done():
-            self._receive_task.cancel()
             try:
-                await self._receive_task
+                # Wait for receive loop to finish (it will exit because connected=False)
+                # This lets any in-flight _handle_incoming call complete
+                await asyncio.wait_for(self._receive_task, timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.warning("Graceful shutdown timed out after %.1fs, forcing close.", timeout)
+                self._receive_task.cancel()
+                try:
+                    await self._receive_task
+                except asyncio.CancelledError:
+                    pass
             except asyncio.CancelledError:
                 pass
         if self._writer:
@@ -83,6 +97,7 @@ class AsyncPyStrandsClient:
                 pass
             self._writer = None
             self._reader = None
+        self._draining = False
         logger.info("Disconnected.")
 
     async def _reconnect(self):
@@ -171,7 +186,7 @@ class AsyncPyStrandsClient:
         buffer = ""
         while self.connected and self._reader:
             try:
-                data = await self._reader.read(65536)
+                data = await asyncio.wait_for(self._reader.read(65536), timeout=0.5)
                 if not data:
                     logger.info("Server closed connection.")
                     await self._handle_connection_lost()
@@ -182,6 +197,8 @@ class AsyncPyStrandsClient:
                     line = line.strip()
                     if line:
                         await self._handle_incoming(line)
+            except asyncio.TimeoutError:
+                continue  # check self.connected on next iteration
             except asyncio.CancelledError:
                 break
             except Exception as e:

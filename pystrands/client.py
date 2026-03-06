@@ -59,18 +59,28 @@ class PyStrandsClient:
             self.connected = False
             return False
 
-    def disconnect(self):
-        """Cleanly disconnect."""
+    def disconnect(self, timeout=5.0):
+        """Cleanly disconnect. Waits for in-flight handlers to finish.
+
+        Args:
+            timeout: Max seconds to wait for in-flight handlers before force-closing.
+        """
         self._intentional_disconnect = True
         self.connected = False
         self._stop_event.set()
+        # Close socket first to unblock recv() in receive thread
         if self.sock:
             try:
                 self.sock.close()
             except Exception:
                 pass
             self.sock = None
-            logger.info("Disconnected.")
+        # Wait for receive thread to finish (lets in-flight handler complete)
+        if self.receive_thread and self.receive_thread.is_alive():
+            self.receive_thread.join(timeout=timeout)
+            if self.receive_thread.is_alive():
+                logger.warning("Graceful shutdown timed out after %.1fs.", timeout)
+        logger.info("Disconnected.")
 
     def _reconnect(self):
         """Attempt to reconnect with exponential backoff."""

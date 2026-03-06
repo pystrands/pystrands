@@ -668,6 +668,79 @@ class TestFullServerRestart:
         sock2.close()
 
 
+class TestGracefulShutdown:
+    @pytest.mark.asyncio
+    async def test_disconnect_waits_for_inflight_handler(self, mock_server):
+        """disconnect() should wait for a running on_message handler to finish,
+        not kill it mid-execution."""
+        handler_completed = False
+
+        class SlowClient(AsyncPyStrandsClient):
+            async def on_message(self, message, context):
+                nonlocal handler_completed
+                await asyncio.sleep(0.5)  # simulate slow work (DB write, API call)
+                handler_completed = True
+
+        client = SlowClient("127.0.0.1", mock_server.port, auto_reconnect=False)
+        await client.connect()
+        await asyncio.sleep(0.1)
+
+        # Trigger slow handler
+        mock_server.send_to(0, {
+            "request_id": "slow", "action": "new_message",
+            "params": {"message": "slow-work", "context": {"client_id": "c1", "room_id": "r1", "metadata": {}}}
+        })
+        await asyncio.sleep(0.1)  # let handler start
+
+        # Disconnect while handler is running
+        await client.disconnect(timeout=3.0)
+
+        assert handler_completed is True, "Handler should finish before disconnect completes"
+
+    @pytest.mark.asyncio
+    async def test_disconnect_force_closes_on_timeout(self, mock_server):
+        """If handler takes longer than timeout, force close."""
+        handler_interrupted = False
+
+        class VerySlowClient(AsyncPyStrandsClient):
+            async def on_message(self, message, context):
+                nonlocal handler_interrupted
+                try:
+                    await asyncio.sleep(10.0)  # way longer than timeout
+                except asyncio.CancelledError:
+                    handler_interrupted = True
+                    raise
+
+        client = VerySlowClient("127.0.0.1", mock_server.port, auto_reconnect=False)
+        await client.connect()
+        await asyncio.sleep(0.1)
+
+        mock_server.send_to(0, {
+            "request_id": "stuck", "action": "new_message",
+            "params": {"message": "stuck", "context": {"client_id": "c1", "room_id": "r1", "metadata": {}}}
+        })
+        await asyncio.sleep(0.1)
+
+        # Disconnect with short timeout — should force close
+        await client.disconnect(timeout=0.5)
+
+        assert handler_interrupted is True, "Handler should be cancelled after timeout"
+        assert client.connected is False
+
+    @pytest.mark.asyncio
+    async def test_disconnect_with_no_inflight_is_instant(self, mock_server):
+        """Disconnect when nothing is running should be fast."""
+        client = AsyncPyStrandsClient("127.0.0.1", mock_server.port, auto_reconnect=False)
+        await client.connect()
+        await asyncio.sleep(0.1)
+
+        start = asyncio.get_event_loop().time()
+        await client.disconnect()
+        elapsed = asyncio.get_event_loop().time() - start
+
+        assert elapsed < 1.0, f"Disconnect with no in-flight should be fast, took {elapsed:.2f}s"
+
+
 class TestConcurrentConnectionRequests:
     @pytest.mark.asyncio
     async def test_multiple_connection_requests(self, mock_server):
