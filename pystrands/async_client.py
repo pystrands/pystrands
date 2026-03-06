@@ -47,8 +47,7 @@ class AsyncPyStrandsClient:
         self.reconnect_backoff = reconnect_backoff
         self._intentional_disconnect = False
 
-        # Write lock to prevent concurrent writes
-        self._write_lock = asyncio.Lock()
+
 
     async def connect(self) -> bool:
         """Connect to the TCP server."""
@@ -147,9 +146,8 @@ class AsyncPyStrandsClient:
 
         try:
             serialized = json.dumps(message) + "\n"
-            async with self._write_lock:
-                self._writer.write(serialized.encode("utf-8"))
-                await self._writer.drain()
+            self._writer.write(serialized.encode("utf-8"))
+            await self._writer.drain()
         except Exception as e:
             logger.error("Send error: %s", e)
             await self._handle_connection_lost()
