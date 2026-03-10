@@ -3,7 +3,6 @@ import json
 import threading
 import uuid
 import logging
-import time
 from pystrands.context import ConnectionRequestContext, Context
 
 # Configure logging

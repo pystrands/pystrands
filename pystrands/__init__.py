@@ -1,5 +1,5 @@
 from .client import PyStrandsClient
 from .async_client import AsyncPyStrandsClient
-from . import context
+from .context import Context, ConnectionRequestContext
 
-__all__ = ["PyStrandsClient", "AsyncPyStrandsClient", "context"]
+__all__ = ["PyStrandsClient", "AsyncPyStrandsClient", "Context", "ConnectionRequestContext"]
